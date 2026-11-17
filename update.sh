@@ -245,6 +245,19 @@ if declare -F ensure_protocols >/dev/null 2>&1; then
   ensure_protocols || true
 fi
 
+# TUN device for OpenVPN: OpenVPN needs /dev/net/tun to create its tunnel
+# interface. On container-based VPSs the node is often missing, so openvpn
+# exits on start and flap-loops (Restart=always) - the dashboard shows it
+# stuck on "activating". Create it here so one vpsupdate heals a VPS whose
+# OpenVPN never started (install.sh's ensure_openvpn does the same on a
+# fresh install). If the node cannot be created the VPS does not allow
+# TUN/TAP and OpenVPN cannot run there - the [WARNING] below names it.
+if [[ ! -e /dev/net/tun ]]; then
+  mkdir -p /dev/net 2>/dev/null
+  mknod /dev/net/tun c 10 200 2>/dev/null && chmod 600 /dev/net/tun 2>/dev/null && echo "[update] Created /dev/net/tun (OpenVPN tunnel device)."
+fi
+[[ -e /dev/net/tun ]] || echo "[update] WARNING: /dev/net/tun is missing and could not be created - this VPS may not allow TUN/TAP, so OpenVPN will stay on 'activating'."
+
 # Restart the services (where present)
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload 2>/dev/null || true
