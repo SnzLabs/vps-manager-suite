@@ -52,7 +52,7 @@ gen_uuid() {
   else python3 -c "import uuid;print(uuid.uuid4())"; fi
 }
 
-ensure_dirs() { mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$CONFIG_DIR/ssl" 2>/dev/null || true; touch "$LOG_FILE" 2>/dev/null || true; }
+ensure_dirs() { mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$CONFIG_DIR/ssl" "$CONFIG_DIR/ssl/certs" 2>/dev/null || true; touch "$LOG_FILE" 2>/dev/null || true; }
 
 log_activity() { ensure_dirs; echo "[$(date -Is)] $*" >> "$LOG_FILE" 2>/dev/null || true; }
 
@@ -215,6 +215,97 @@ issue_ssl() {
   # which also verifies they are actually active again.
   if command -v systemctl >/dev/null 2>&1; then
     for s in xray vps-panel; do systemctl restart "$s" 2>/dev/null || true; done
+  fi
+  [[ -n "$got" ]]
+  )
+}
+
+# --- Per-SNI certificates ----------------------------------------------------
+# A custom SNI only works with clients that verify the certificate when
+# HAProxy can present a certificate FOR that SNI. issue_sni_cert() issues
+# a Let's Encrypt certificate for one SNI domain and places the combined
+# bundle in $CONFIG_DIR/ssl/certs/<domain>.pem, which the https_in
+# frontend loads alongside the main haproxy.pem (SNI-matched cert wins,
+# otherwise the main domain's cert is served). The domain must be one the
+# operator owns and points at this server (an A record to the VPS IP) -
+# Let's Encrypt will fail for a domain that does not resolve here, and
+# for a domain the operator does not control (e.g. test.com). Same
+# stop/restore contract as issue_ssl: certbot needs port 80 free, so
+# haproxy+nginx stop while it runs and are restored on EVERY exit path.
+issue_sni_cert() {
+  local domain="$1"
+  domain="$(printf '%s' "$domain" | tr '[:upper:]' '[:lower:]' | sed 's/\.$//')"
+  if [[ -z "$domain" ]]; then err "issue_sni_cert: no domain given"; return 1; fi
+  # Must be a hostname (not an IP) - a cert cannot be issued for an IP here.
+  if ! printf '%s' "$domain" | grep -qE '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$'; then
+    err "issue_sni_cert: '$domain' is not a valid hostname"
+    return 1
+  fi
+  if printf '%s' "$domain" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    err "issue_sni_cert: '$domain' is an IP address - a certificate cannot be issued for it here; use a domain name."
+    return 1
+  fi
+  local main_domain=""
+  main_domain="$(get_domain)"
+  if [[ -z "$main_domain" ]]; then
+    # get_domain() reads $CONFIG_DIR/config.json, but the panel keeps the
+    # live config in $DATA_DIR/config.json - fall back to that.
+    main_domain="$(python3 -c "import json;print(json.load(open('$DATA_DIR/config.json')).get('domain',''))" 2>/dev/null || echo "")"
+  fi
+  if [[ -n "$main_domain" && "$domain" == "$main_domain" ]]; then
+    ok "SNI '$domain' is the main domain - it is already covered by haproxy.pem, no extra certificate needed."
+    return 0
+  fi
+  ensure_dirs; mkdir -p "$CONFIG_DIR/ssl/certs"
+  local cert_out="$CONFIG_DIR/ssl/certs/$domain.pem"
+  if [[ -s "$cert_out" ]]; then
+    # Already issued: verify it is still valid and reload HAProxy so the
+    # current config picks it up (cheap, idempotent).
+    if openssl x509 -checkend 0 -noout -in "$cert_out" >/dev/null 2>&1; then
+      ok "Certificate for '$domain' already exists and is valid ($cert_out)."
+      if command -v systemctl >/dev/null 2>&1; then systemctl reload haproxy 2>/dev/null || systemctl restart haproxy 2>/dev/null || true; fi
+      return 0
+    fi
+    warn "Existing certificate for '$domain' is expired - re-issuing."
+  fi
+  (
+  trap 'web_stack_restore' EXIT
+  trap 'web_stack_restore; exit 130' INT
+  trap 'web_stack_restore; exit 143' TERM
+  local le_dir="/etc/letsencrypt/live/$domain"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop haproxy nginx 2>/dev/null || true
+  fi
+  local got="" le_log="/var/log/vps-manager-certbot-sni.log"
+  if command -v certbot >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$le_log")" 2>/dev/null || true
+    if certbot certonly --standalone -d "$domain" --non-interactive --agree-tos -m "admin@$domain" >"$le_log" 2>&1 \
+       && [[ -s "$le_dir/fullchain.pem" && -s "$le_dir/privkey.pem" ]]; then
+      cat "$le_dir/fullchain.pem" "$le_dir/privkey.pem" > "$cert_out" 2>/dev/null || true
+      chmod 600 "$cert_out" 2>/dev/null || true
+      if [[ -s "$cert_out" ]]; then got="letsencrypt"; fi
+    else
+      warn "Let's Encrypt failed for '$domain' - certbot reported (full log: $le_log):"
+      local _le_lines=""
+      _le_lines="$(grep -iE "error|unauthorized|timeout|refused|invalid|no such host|does not resolve" "$le_log" 2>/dev/null | tail -n 3 || true)"
+      if [[ -n "$_le_lines" ]]; then
+        while IFS= read -r _l; do echo "  $_l"; done <<< "$_le_lines"
+      fi
+      echo "Hint: '$domain' must be a domain you own with an A record pointing at this VPS IP, and port 80 must be reachable."
+    fi
+  else
+    err "certbot is not installed - cannot issue a certificate for '$domain'."
+  fi
+  if [[ -n "$got" ]]; then
+    ok "Certificate issued for '$domain' ($cert_out)."
+  else
+    err "Could not issue a certificate for '$domain'. The SNI will still route, but clients that verify the certificate will see the main domain's cert and may reject the connection."
+  fi
+  # haproxy + nginx are brought back by the EXIT trap (web_stack_restore);
+  # reload haproxy afterwards so the new cert is served (a reload keeps
+  # established connections alive).
+  if [[ -n "$got" ]] && command -v systemctl >/dev/null 2>&1; then
+    systemctl reload haproxy 2>/dev/null || systemctl restart haproxy 2>/dev/null || true
   fi
   [[ -n "$got" ]]
   )

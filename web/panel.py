@@ -1904,15 +1904,26 @@ class Handler(BaseHTTPRequestHandler):
                 tog = "0" if x.get("active") else "1"
                 tog_lbl = "Deactivate" if x.get("active") else "Activate"
                 xb64 = config_export_b64(x)
+                # A custom SNI needs its own certificate, otherwise a
+                # client that verifies the cert sees the main domain's
+                # cert and rejects the connection. Offer issuance here.
+                _xsni = str(x.get("sni") or x.get("domain") or "").strip().lower()
+                _xdom = str(x.get("domain") or "").strip().lower()
+                cert_btn = ""
+                if _xsni and _xsni != _xdom:
+                    cert_btn = (f"<form method='post' action='/configs/cert' style='display:inline'>"
+                                f"<input type='hidden' name='id' value='{xid}'>"
+                                f"<button class='small' title='Issue a real certificate for this SNI so clients that verify it accept the connection'>Issue Cert</button></form> ")
                 rows += (f"<tr><td><b>{html.escape(str(x.get('name','')))}</b></td>"
                          f"<td>{html.escape(CONFIG_PROTOCOL_LABELS.get(str(x.get('protocol','')), str(x.get('protocol',''))))}</td>"
                          f"<td>{html.escape(str(x.get('domain','')))}</td>"
-                         f"<td>{html.escape(str(x.get('domain','')))}</td>"
+                         f"<td>{html.escape(str(x.get('sni') or x.get('domain','')))}</td>"
                          f"<td>{to_int(x.get('port',0))}</td><td>{st}</td>"
                          f"<td style='min-width:300px'><button type='button' class='small' onclick=\"copyText('cfg-b64-{xid}', this)\">Copy Config</button> "
                          f"<pre id='cfg-b64-{xid}' style='display:none'>{html.escape(xb64)}</pre> "
                          f"<a class='btn ghost small' href='/configs/export?id={xid}'>QR / Export</a> "
                          f"<a class='btn ghost small' href='/configs?edit={xid}'>Edit</a> "
+                         f"{cert_btn}"
                          f"<form method='post' action='/configs/toggle' style='display:inline'><input type='hidden' name='id' value='{xid}'><input type='hidden' name='active' value='{tog}'><button class='small ghost'>{tog_lbl}</button></form> "
                          f"<form method='post' action='/configs/delete' style='display:inline'><input type='hidden' name='id' value='{xid}'><button class='danger'>Delete</button></form></td></tr>")
             if not rows:
@@ -1945,7 +1956,8 @@ class Handler(BaseHTTPRequestHandler):
             <button>Save & Generate Client Config</button></form>
             <p class='mut'>Default ports: VLESS / VMess / Trojan / SSH 443, OpenVPN 1194, SlowDNS 53. For SSH the payload is generated for you with Host set to the profile SNI, and the path is the protocol's real endpoint on this stack.</p></div>
             {saved_html}<div class='card'><h3>Saved SNI Routes</h3><div class='tblwrap'><table><tr><th>Name</th><th>Protocol</th><th>VPS Domain</th><th>SNI</th><th>Port</th><th>Status</th><th>Action</th></tr>{rows}</table></div>
-            <p class='mut'>Saving, toggling or deleting a route re-renders the routing maps (scripts/config-sync.sh) and reloads HAProxy gracefully when a map changed.</p></div>
+            <p class='mut'>Saving, toggling or deleting a route re-renders the routing maps (scripts/config-sync.sh) and reloads HAProxy gracefully when a map changed.</p>
+            <p class='mut'>Custom SNI: a client that checks the certificate only accepts the connection if the server has a certificate FOR that SNI. Use 'Issue Cert' on a route whose SNI differs from the domain - it issues a real certificate for that SNI (the domain must be yours and point at this VPS). Without it, the route still works only for clients that skip certificate verification.</p></div>
             <div class='card'><h3>SNI Manager - API Token</h3>
             <p class='mut'>Remote clients and scripts fetch the active profiles from <code>GET /api/configs</code> with the header <code>X-Config-Token</code>. Keep this token private - anyone holding it can read the profile list.</p>
             <div class='codebox'><button type='button' class='copybtn' onclick="copyText('cfg-token', this)">Copy</button><pre id='cfg-token'>{html.escape(tok)}</pre></div>
@@ -2471,6 +2483,21 @@ class Handler(BaseHTTPRequestHandler):
             save_config(cfg)
             log_activity("config API token regenerated")
             return self.redirect("/configs")
+        if p == "/configs/cert":
+            profiles = load_profiles()
+            rec = next((x for x in profiles if x.get("id") == str(data.get("id") or "")), None)
+            if rec is None:
+                return self.redirect("/configs?err=" + urllib.parse.quote("Profile not found."))
+            sni = str(rec.get("sni") or rec.get("domain") or "").strip().lower()
+            domain = str(rec.get("domain") or "").strip().lower()
+            if not sni or sni == domain:
+                return self.redirect("/configs?err=" + urllib.parse.quote(
+                    "SNI '" + (sni or "(blank)") + "' is the main domain - it is already covered by the main certificate, no extra certificate needed."))
+            log_activity(f"issuing SNI certificate for {sni} (profile {rec.get('name','')})")
+            sd = suite_script("issue-sni-cert.sh")
+            return self.stream_cmd("Issue SNI Certificate - " + sni,
+                                   ["bash", sd, sni] if sd else ["echo", "issue-sni-cert.sh not found - run vpsupdate first"],
+                                   back="/configs", back_label="Back to SNI Manager")
         if p == "/telegram":
             cfg.update({"telegram_token": data.get("telegram_token", ""), "telegram_admin_id": data.get("telegram_admin_id", "")}); save_config(cfg); log_activity("telegram config saved"); return self.redirect("/telegram")
         if p == "/settings":

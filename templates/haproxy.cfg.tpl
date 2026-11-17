@@ -52,7 +52,13 @@ frontend http_in
 
 frontend https_in
     mode tcp
-    bind *:443 ssl crt /etc/vps-manager/ssl/haproxy.pem alpn http/1.1
+    # SNI certificates: haproxy.pem is the default (main domain); the
+    # certs/ directory holds one combined .pem per custom SNI domain
+    # (issued by scripts/issue-sni-cert.sh), and HAProxy picks the cert
+    # matching the client's SNI. A custom SNI with no cert here still
+    # connects, but the client sees the main domain's cert and may
+    # reject it for hostname mismatch.
+    bind *:443 ssl crt /etc/vps-manager/ssl/haproxy.pem crt /etc/vps-manager/ssl/certs/ alpn http/1.1
     timeout client 3600s
     # Config Manager SNI map (panel > Config Manager, rendered by
     # scripts/config-sync.py into /etc/vps-manager/sni.map): the SNI of

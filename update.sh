@@ -98,6 +98,10 @@ chmod +x "$SUITE_DIR"/*.sh "$SUITE_DIR"/scripts/*.sh 2>/dev/null || true
 # before HAProxy starts; scripts/config-sync.py fills them from the panel's
 # profiles. An install that predates the SNI Manager gains them here.
 mkdir -p /etc/vps-manager 2>/dev/null || true
+# Per-SNI certificates live in /etc/vps-manager/ssl/certs/; the HAProxy
+# frontend loads that directory, so it must exist before the re-rendered
+# config is validated - an empty directory is fine.
+mkdir -p /etc/vps-manager/ssl/certs 2>/dev/null || true
 [[ -f /etc/vps-manager/sni.map ]] || : > /etc/vps-manager/sni.map 2>/dev/null || true
 [[ -f /etc/vps-manager/nginx-profile-map.conf ]] || : > /etc/vps-manager/nginx-profile-map.conf 2>/dev/null || true
 

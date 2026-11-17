@@ -144,6 +144,11 @@ nginx -t || warn "nginx config test warning"
 mkdir -p "$CONFIG_DIR" 2>/dev/null || true
 [[ -f "$CONFIG_DIR/sni.map" ]] || : > "$CONFIG_DIR/sni.map" 2>/dev/null || true
 [[ -f "$CONFIG_DIR/nginx-profile-map.conf" ]] || : > "$CONFIG_DIR/nginx-profile-map.conf" 2>/dev/null || true
+# Per-SNI certificates live in $CONFIG_DIR/ssl/certs/ (one combined .pem
+# per custom SNI domain); the HAProxy frontend loads that directory, so
+# it must exist before the config is checked - an empty directory is
+# fine, the main haproxy.pem stays the default certificate.
+mkdir -p "$CONFIG_DIR/ssl/certs" 2>/dev/null || true
 # HAProxy terminates TLS on 443 from the bundle $CONFIG_DIR/ssl/haproxy.pem.
 # On a reinstall the cert pair already exists, so the bundle can be built
 # and the config fully checked right away. On a first install the pair is
