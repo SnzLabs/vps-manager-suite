@@ -255,4 +255,4 @@ MIT License — see the [LICENSE](LICENSE) file.
 
 ---
 
-**Made with ❤️ by [@mrshahnawazyt](https://github.com/mrshahnawazyt)**
+**Made with ❤️ by [SnzLabs](https://github.com/SnzLabs)**
