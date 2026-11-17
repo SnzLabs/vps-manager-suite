@@ -862,6 +862,15 @@ ensure_openvpn() {
   fi
   command -v openvpn >/dev/null 2>&1 || { warn "OpenVPN: the openvpn package is not available - OpenVPN is not installed yet (install it, then run Fix Stack)"; return 1; }
   [[ -x /usr/share/easy-rsa/easyrsa ]] || { warn "OpenVPN: easy-rsa is not available - OpenVPN accounts cannot be issued yet (install easy-rsa, then run Fix Stack)"; return 1; }
+  # TUN device: OpenVPN needs /dev/net/tun to create its tunnel interface.
+  # On container-based VPSs it is often missing, and openvpn then exits on
+  # start - the service flap-loops (Restart=always) and the dashboard shows
+  # it stuck on "activating". Create the device node if it is absent.
+  if [[ ! -e /dev/net/tun ]]; then
+    mkdir -p /dev/net 2>/dev/null
+    mknod /dev/net/tun c 10 200 2>/dev/null && chmod 600 /dev/net/tun 2>/dev/null
+  fi
+  [[ -e /dev/net/tun ]] || warn "OpenVPN: /dev/net/tun is missing and could not be created - this VPS may not allow TUN/TAP (container). OpenVPN will not start; enable TUN in the VPS panel or use a KVM VPS."
   mkdir -p "$OVPN_DIR/profiles" || return 1
   if [[ ! -d "$OVPN_DIR/easy-rsa" ]]; then
     cp -a /usr/share/easy-rsa "$OVPN_DIR/easy-rsa" 2>/dev/null || { warn "OpenVPN: could not stage easy-rsa"; return 1; }

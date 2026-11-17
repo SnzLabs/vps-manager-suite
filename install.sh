@@ -290,6 +290,11 @@ ensure_protocols
 # 12) Services enable + health check
 systemctl daemon-reload || true
 for svc in nginx haproxy dropbear ws-proxy vps-panel xray vps-monitor vps-slowdns vps-zivpn vps-openvpn; do systemctl enable --now "$svc" 2>/dev/null && ok "$svc up" || warn "$svc failed to start - check: systemctl status $svc"; done
+# Dropbear watchdog: Dropbear is a sysv service with no Restart=always, so
+# if its process dies it stays dead silently (systemd still reports it
+# "active") and every SSH path (WS + TLS) breaks with no error. A cron
+# checks every 2 minutes and restarts it if the process is gone.
+printf '%s\n' '*/2 * * * * root pgrep -x dropbear >/dev/null || systemctl restart dropbear' > /etc/cron.d/dropbear-watchdog 2>/dev/null && chmod 644 /etc/cron.d/dropbear-watchdog 2>/dev/null && ok "dropbear watchdog installed (auto-restart if it dies)" || warn "could not install the dropbear watchdog cron"
 # 'enable --now' does NOT restart an already-running service - so restart the
 # panel explicitly, so the new panel.py and the SSL certificate issued in this
 # install are loaded immediately (otherwise the panel stays on old code / HTTP).

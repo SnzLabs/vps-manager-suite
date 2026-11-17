@@ -254,6 +254,13 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl is-active --quiet vps-bot 2>/dev/null && systemctl restart vps-bot 2>/dev/null || true
 fi
 
+# Dropbear watchdog: Dropbear is a sysv service with no Restart=always, so
+# if its process dies it stays dead silently (systemd still reports it
+# "active") and every SSH path (WS + TLS) breaks with no error. Install a
+# cron that checks every 2 minutes and restarts it if the process is gone
+# (also heals installs that predate this watchdog).
+printf '%s\n' '*/2 * * * * root pgrep -x dropbear >/dev/null || systemctl restart dropbear' > /etc/cron.d/dropbear-watchdog 2>/dev/null && chmod 644 /etc/cron.d/dropbear-watchdog 2>/dev/null && echo "[update] Dropbear watchdog installed (auto-restart if it dies)."
+
 # Strip ANSI colour codes from the live SSH banner, if present. Phone
 # VPN apps show the Server Message in a plain log viewer that does not
 # interpret ANSI escapes, so a banner saved with colours prints as

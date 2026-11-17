@@ -2064,6 +2064,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(b)))
             self.end_headers(); self.wfile.write(b)
             return
+        if p == "/admins":
             creds = load_creds(); role = self.session_role()
             extras = load_admins()
             def _role_opts(cur):
