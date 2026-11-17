@@ -223,6 +223,26 @@ def config_export_b64(p):
     import base64 as _b64
     return _b64.b64encode(json.dumps(config_public(p), indent=2).encode()).decode()
 
+def config_httpcustom_json(p):
+    """HTTP Custom (.json) export: a plain JSON config the HTTP Custom app
+    (v8.0.22+, which supports .json import) can open directly, with the
+    profile's server, port, SNI and payload pre-filled - so the SNI the
+    operator set in the panel is the SNI the app uses, with no manual
+    SNI typing in the app. Shape follows HTTP Custom's own config model
+    (name / address / type / sshConfig{sshHost, sshPort, sshUsername,
+    sshPassword, sni, payload}). The SSH username/password are left
+    blank on purpose - the profile carries no account, the user enters
+    their SSH account once in the app after import."""
+    _sni = str(p.get("sni") or p.get("domain") or "")
+    _dom = str(p.get("domain") or "")
+    _port = to_int(p.get("port", 0))
+    ssh = {"sshHost": _dom, "sshPort": _port, "sshUsername": "", "sshPassword": "",
+           "sni": _sni}
+    if p.get("protocol") == "ssh-tls":
+        ssh["payload"] = config_payload(_sni)
+    return {"name": str(p.get("name", "")), "address": _dom, "type": "SSH",
+            "sshConfig": ssh}
+
 def ensure_config_token():
     cfg = load_config()
     tok = str(cfg.get("config_api_token") or "").strip()
@@ -1997,10 +2017,27 @@ class Handler(BaseHTTPRequestHandler):
             <p class='mut'>Give this code (or the QR code) to the client: they import it and connect - no manual host or SNI typing. "Locked" means the client cannot edit the host or SNI fields in the profile (<b>{html.escape(str(prof.get('domain','')))}</b>). The code is <b>base64 encoding, not encryption</b> - anyone can decode it, so share it like a password.</p>
             <div class='codebox'><button type='button' class='copybtn' onclick="copyText('cfg-export', this)">Copy</button><pre id='cfg-export'>{html.escape(b64)}</pre></div>
             {qr_html}
+            <h3 style='margin-top:16px'>HTTP Custom (.json)</h3>
+            <p class='mut'>For the HTTP Custom app (v8.0.22+ supports .json import): download this file and open it in HTTP Custom - the server, port, SNI (<b>{html.escape(str(prof.get('sni') or prof.get('domain','')))}</b>) and payload are already filled in, so the SNI you set in the panel is the SNI the app uses. Add your SSH username/password once in the app after import.</p>
+            <p><a class='btn' href='/configs/httpcustom?id={html.escape(pid)}'>Download {html.escape(str(prof.get('name','')))}.json (HTTP Custom)</a></p>
             <h3 style='margin-top:16px'>Profile contents</h3><pre class='raw'>{pretty}</pre>
             <p><a class='btn ghost' href='/configs'>Back to SNI Manager</a></p></div>"""
             return self.send_html(page("Locked Config", body, active="/configs", user=user))
-        if p == "/admins":
+        if p == "/configs/httpcustom":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            pid = (qs.get("id") or [""])[0]
+            prof = next((x for x in load_profiles() if x.get("id") == pid), None)
+            if prof is None:
+                return self.send_html(page("SNI Manager", "<div class='card'><h3>Profile not found</h3><p><a class='btn ghost' href='/configs'>Back to SNI Manager</a></p></div>", active="/configs", user=user), code=404)
+            hc = config_httpcustom_json(prof)
+            fn = "".join(c if (c.isalnum() or c in "-_") else "_" for c in str(prof.get("name", "profile"))) or "profile"
+            b = json.dumps(hc, indent=2).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Disposition", f"attachment; filename={fn}.json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers(); self.wfile.write(b)
+            return
             creds = load_creds(); role = self.session_role()
             extras = load_admins()
             def _role_opts(cur):
