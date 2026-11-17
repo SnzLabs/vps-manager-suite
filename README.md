@@ -1,6 +1,6 @@
 # 🚀 VPS Manager Suite
 
-**Deploy and manage a complete VPS from a single script** — SSH-WS/SSL, Xray (VMess / VLESS / Trojan), HAProxy + Nginx multiplexer, CAKE QoS, a fast limit monitor, and a dark **Web Panel (port 9090)**.
+**Deploy and manage a complete VPS from a single script** — SSH-WS/SSL, Xray (VMess / VLESS / Trojan), HAProxy + Nginx multiplexer, CAKE QoS, a fast limit monitor, and a dark **Web Panel (https://your.domain.com/)**.
 
 Everything is controlled from three places with the same power: the **terminal menu**, the **web panel**, and a **Telegram bot** that works as a full remote panel.
 
@@ -16,7 +16,7 @@ Everything is controlled from three places with the same power: the **terminal m
 Run this single command as root on your VPS — everything else happens automatically:
 
 ```bash
-export GH_REPO=mrshahnawazyt/vps-manager-suite; curl -fsSL https://raw.githubusercontent.com/mrshahnawazyt/vps-manager-suite/main/install.sh -o install.sh && sudo -E bash install.sh
+export GH_REPO=SnzLabs/vps-manager-suite; curl -fsSL https://raw.githubusercontent.com/SnzLabs/vps-manager-suite/main/install.sh -o install.sh && sudo -E bash install.sh
 ```
 
 The script asks for your domain itself. After the install, use `vpsmenu` for the menu and `vpsupdate` for updates.
@@ -27,7 +27,7 @@ The script asks for your domain itself. After the install, use `vpsmenu` for the
 
 - **1-Command Install** — one command from GitHub downloads and installs everything
 - **Terminal Menu** — 12 options (Install, Domain, SSL, Users, Status, Fix, QoS, Stats, Telegram, Panel, Uninstall)
-- **Web Panel (9090)** — Dashboard, SSH Accounts, Xray Accounts, Services, VPS Stats & Speedtest, Telegram Bot, Settings, Panel Admins, Activity/Audit Log
+- **Web Panel** — Dashboard, SSH Accounts, Xray Accounts, Services, VPS Stats & Speedtest, Telegram Bot, Settings, Panel Admins, Activity/Audit Log (opens at `https://your.domain.com/`; port 9090 also works)
 - **Full Account Lifecycle** — Create, Renew, Edit Limits, Reset Usage, Lock, Unlock and Delete for SSH and Xray accounts — from the terminal, the panel **and** the Telegram bot
 - **SSH** — Dropbear based, Direct / SSL / WS / WS-SSL, with an auto-generated payload
 - **SlowDNS** — DNSTT DNS tunnel on UDP 53 straight into the SSH service: clients use their normal **SSH username + password** with the SlowDNS NS host (Settings → SlowDNS Domain, default `dns.` + your domain)
@@ -60,10 +60,10 @@ The script asks for your domain itself. After the install, use `vpsmenu` for the
 
 - Only `install.sh` is downloaded — the installer fetches the rest of the files from this repo itself.
 - You can also pass the domain directly: `sudo -E bash install.sh your.domain.com` — if you don't, the script asks for it.
-- Prefer the full folder? `git clone https://github.com/mrshahnawazyt/vps-manager-suite.git`, then run `sudo bash install.sh` inside it.
+- Prefer the full folder? `git clone https://github.com/SnzLabs/vps-manager-suite.git`, then run `sudo bash install.sh` inside it.
 
 At the end of the install you get a **READY screen** with:
-- The Web Panel link: `https://your.domain.com:9090`
+- The Web Panel link: `https://your.domain.com/` (port 9090 also works: `https://your.domain.com:9090`)
 - Username: `admin` — the password is generated and shown on that screen (and saved in the credentials file)
 - A summary of all ports and services
 
@@ -92,7 +92,7 @@ vpsmenu
 
 ## 🌐 Web Panel
 
-- **URL:** `https://<domain>:9090` — Login: `admin` + the install password
+- **URL:** `https://<domain>/` (fallback: `https://<domain>:9090`) — Login: `admin` + the install password
 - **Dashboard** — CPU/RAM/Disk, SSH/Xray account counts, services status, server info
 - **SSH Accounts** — create an account and get a ready-made output card: username, password, host, SNI, expiry, ports, server City/Region, **payload** (with a Copy button); every account row also has Renew / Set Limits / Reset Usage / Lock-Unlock / Delete
 - **Xray Accounts** — VMess/VLESS/Trojan, auto-generated UUID, **5 links per account** (WS / WS-TLS / TCP-TLS / XHTTP-TLS / XHTTP-NTLS), each with a Copy button and a **QR code**; same lifecycle actions as SSH
@@ -181,7 +181,7 @@ Enforcement runs every **4 seconds** (`vps-monitor` service): expired accounts a
 | 53 (UDP) | SlowDNS (DNSTT) — needs the NS record below |
 | 5667 (UDP) | ZiVPN UDP server (app ports 6000-19999 UDP redirect to it) |
 | 1194 (UDP) | OpenVPN |
-| 9090 | Web Panel (HTTPS) |
+| 9090 (also 443) | Web Panel (HTTPS) — also at `https://<domain>/` |
 
 ### SlowDNS — one DNS record (one-time setup)
 

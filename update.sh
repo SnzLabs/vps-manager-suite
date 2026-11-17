@@ -13,12 +13,12 @@
 #
 # Usage: sudo bash update.sh [--dry-run]
 # Env overrides (for testing):
-#   VPSMGR_REPO=owner/repo        (default: mrshahnawazyt/vps-manager-suite)
+#   VPSMGR_REPO=owner/repo        (default: SnzLabs/vps-manager-suite)
 #   VPSMGR_BRANCH=main
 #   VPSMGR_TARBALL=/path/file.tgz (local tarball - the download is skipped)
 #   VPSMGR_SUITE_DIR=/opt/vps-manager-suite
 set -u
-REPO="${VPSMGR_REPO:-mrshahnawazyt/vps-manager-suite}"
+REPO="${VPSMGR_REPO:-SnzLabs/vps-manager-suite}"
 BRANCH="${VPSMGR_BRANCH:-main}"
 SUITE_DIR="${VPSMGR_SUITE_DIR:-/opt/vps-manager-suite}"
 BACKUP_ROOT="${VPSMGR_BACKUP_ROOT:-/var/backups/vps-manager-suite}"
@@ -210,8 +210,20 @@ if [[ -n "$_upd_dom" ]]; then
       && echo "[update] nginx router re-rendered from the new template" || echo "[update] Warning: could not re-render /etc/nginx/nginx.conf"
   fi
   if [[ -d /etc/haproxy ]]; then
-    sed "s/__DOMAIN__/$_upd_dom/g; s/__WSPROXY_PORT__/$_upd_wsp/g; s/__WSPROXY_PROXY_PORT__/$((_upd_wsp+1))/g" "$SUITE_DIR/templates/haproxy.cfg.tpl" > /etc/haproxy/haproxy.cfg 2>/dev/null \
-      && echo "[update] haproxy config re-rendered (port 443 = TLS termination + CONNECT routing)" || echo "[update] Warning: could not re-render /etc/haproxy/haproxy.cfg"
+    # Back up the live config first, then validate the re-rendered one
+    # BEFORE it is ever loaded: a bad template must never take the
+    # front door (port 443) down. On failure the old config is restored
+    # and the restart below loads the known-good file.
+    _hap_bak="/etc/haproxy/haproxy.cfg.bak.$(date +%Y%m%d-%H%M%S)"
+    cp /etc/haproxy/haproxy.cfg "$_hap_bak" 2>/dev/null || true
+    if sed "s/__DOMAIN__/$_upd_dom/g; s/__WSPROXY_PORT__/$_upd_wsp/g; s/__WSPROXY_PROXY_PORT__/$((_upd_wsp+1))/g" "$SUITE_DIR/templates/haproxy.cfg.tpl" > /etc/haproxy/haproxy.cfg 2>/dev/null \
+       && haproxy -c -f /etc/haproxy/haproxy.cfg >/dev/null 2>&1; then
+      echo "[update] haproxy config re-rendered (port 443 = TLS termination + CONNECT routing + panel at https://$_upd_dom/)"
+    else
+      echo "[update] Warning: the re-rendered haproxy config FAILED its check - restoring the previous config."
+      [[ -f "$_hap_bak" ]] && cp "$_hap_bak" /etc/haproxy/haproxy.cfg 2>/dev/null || true
+      echo "[update] Warning: could not apply the new haproxy config (kept the old one) - run menu option 06 (Fix Stack) to diagnose."
+    fi
   fi
 else
   echo "[update] Warning: no domain found in the config - router configs not re-rendered (run menu option 06, Fix Stack, after setting a domain)."

@@ -8,11 +8,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # --- Single-file bootstrap (same style as the video) ---
 # If only install.sh was downloaded (no lib/ folder next to it), download the
 # remaining files from the GitHub repo and re-run this installer.
-# Usage: curl -fsSL https://raw.githubusercontent.com/mrshahnawazyt/vps-manager-suite/main/install.sh -o install.sh && bash install.sh
-# GH_REPO defaults to this suite's own repo (mrshahnawazyt/vps-manager-suite);
+# Usage: curl -fsSL https://raw.githubusercontent.com/SnzLabs/vps-manager-suite/main/install.sh -o install.sh && bash install.sh
+# GH_REPO defaults to this suite's own repo (SnzLabs/vps-manager-suite);
 # override with: export GH_REPO=username/repo-name [GH_TOKEN=xxx for a private repo]
 if [[ ! -f "$SCRIPT_DIR/lib/common.sh" ]]; then
-  GH_REPO="${GH_REPO:-mrshahnawazyt/vps-manager-suite}"
+  GH_REPO="${GH_REPO:-SnzLabs/vps-manager-suite}"
   echo "Downloading the remaining files from the GitHub repo ($GH_REPO)..."
   _tmp="$(mktemp -d)"; mkdir -p "$_tmp/src"
   _auth=(); [[ -n "${GH_TOKEN:-}" ]] && _auth=(-H "Authorization: token $GH_TOKEN")
@@ -304,13 +304,16 @@ IP=$(curl -s --max-time 5 https://api.ipify.org || ip route get 1.1.1.1 2>/dev/n
 EXPIRY_DATE=$(date -d "+365 days" +%F 2>/dev/null || echo "-")
 log_activity "install completed for $DOMAIN"
 banner "INSTALL COMPLETE — Summary"
-# The correct panel URL: when a certificate exists, the panel is HTTPS ONLY (the http link will not work)
+# The correct panel URL: when a certificate exists, the panel is HTTPS ONLY (the http link will not work).
+# With a cert, the panel opens at the domain itself (port 443, no :9090
+# needed); :9090 stays as a fallback. Without a cert there is no TLS on
+# 443, so the panel is only on :9090 over HTTP.
 if [[ -s "$CONFIG_DIR/ssl/fullchain.pem" && -s "$CONFIG_DIR/ssl/privkey.pem" ]]; then
-  PANEL_LINE="https://$DOMAIN:9090"
+  PANEL_LINE="https://$DOMAIN/  (fallback: https://$DOMAIN:9090)"
   PANEL_NOTE="HTTPS only - the http link will not work"
 else
   PANEL_LINE="http://${IP:-127.0.0.1}:9090"
-  PANEL_NOTE="No SSL certificate - the panel is on HTTP"
+  PANEL_NOTE="No SSL certificate - the panel is on HTTP (issue SSL to also open it at https://$DOMAIN/)"
 fi
 cat <<EOF
   Domain       : $DOMAIN

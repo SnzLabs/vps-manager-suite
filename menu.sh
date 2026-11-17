@@ -601,7 +601,8 @@ PY
       _user="admin"; _pass="(not found)"
       if [[ -n "$_cred" ]]; then mapfile -t _cu < <(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('username','admin')); print(d.get('password','(not found)'))" "$_cred" 2>/dev/null); _user="${_cu[0]:-admin}"; _pass="${_cu[1]:-(not found)}"; fi
       echo "$BOX_EDGE"; box_center "WEB PANEL"; echo "$BOX_EDGE"
-      box_line "Panel (HTTPS): https://$DOMAIN:$_port"
+      box_line "Panel: https://$DOMAIN/"
+      box_line "Panel (HTTPS, fallback): https://$DOMAIN:$_port"
       box_line "Panel (IP): http://$_ip:$_port"
       box_line "User : $_user"
       box_line "Pass : $_pass"
