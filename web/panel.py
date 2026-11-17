@@ -1684,6 +1684,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         p = urllib.parse.urlparse(self.path).path
         self.set_ctx()
+        if p in ("/favicon.ico", "/favicon.png", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"):
+            # No favicon is shipped. Answer 204 (no body, no HTML) instead
+            # of falling through to the 404 page: browsers request a
+            # favicon on every page load, and a full HTML 404 page for it
+            # is what Chrome on Android intermittently saves as a file
+            # download (the "page downloads on every reload" reports).
+            # Public on purpose - favicons are fetched without a session.
+            self.send_response(204); self.send_header("Content-Length", "0"); self.end_headers()
+            return
         if p == "/api/configs":
             # Token-guarded machine API (no panel session): active
             # first-party profiles only, public fields only.
