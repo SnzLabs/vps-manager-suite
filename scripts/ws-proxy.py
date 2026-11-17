@@ -52,22 +52,34 @@ _log_lock = threading.Lock()
 
 
 def log_connection(ip, via):
+    # Logging must NEVER block a tunnel. log_connection runs after the
+    # 101 is sent but before Dropbear is connected, so a stuck lock here
+    # hangs the client: it sees the 101 and then waits forever for the
+    # SSH banner that never comes ("Premature connection close" /
+    # "Connection lost" in the VPN app, port 8080 "not working"). The
+    # lock can stick if a thread died while holding it or the log
+    # directory became unusable - so acquire it with a short timeout
+    # and SKIP the log entry if it cannot be taken, instead of waiting.
+    # A missing log line is harmless; a hung tunnel is not.
+    if not _log_lock.acquire(timeout=1.0):
+        return
     try:
-        with _log_lock:
-            os.makedirs(DATA_DIR, exist_ok=True)
-            try:
-                if os.path.getsize(LOG_PATH) > 1_000_000:
-                    with open(LOG_PATH, "rb") as f:
-                        f.seek(-500_000, os.SEEK_END)
-                        tail = f.read()
-                    with open(LOG_PATH, "wb") as f:
-                        f.write(tail[tail.find(b"\n") + 1:])
-            except Exception:
-                pass
-            with open(LOG_PATH, "a") as f:
-                f.write(json.dumps({"ts": time.time(), "ip": ip, "via": via}) + "\n")
+        os.makedirs(DATA_DIR, exist_ok=True)
+        try:
+            if os.path.getsize(LOG_PATH) > 1_000_000:
+                with open(LOG_PATH, "rb") as f:
+                    f.seek(-500_000, os.SEEK_END)
+                    tail = f.read()
+                with open(LOG_PATH, "wb") as f:
+                    f.write(tail[tail.find(b"\n") + 1:])
+        except Exception:
+            pass
+        with open(LOG_PATH, "a") as f:
+            f.write(json.dumps({"ts": time.time(), "ip": ip, "via": via}) + "\n")
     except Exception:
         pass
+    finally:
+        _log_lock.release()
 
 
 # RFC 6455's own example key. Minimal payload clients (DarkTunnel and
