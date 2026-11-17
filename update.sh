@@ -21,6 +21,10 @@ set -u
 REPO="${VPSMGR_REPO:-SnzLabs/vps-manager-suite}"
 BRANCH="${VPSMGR_BRANCH:-main}"
 SUITE_DIR="${VPSMGR_SUITE_DIR:-/opt/vps-manager-suite}"
+# lib/common.sh uses $SCRIPT_DIR (e.g. ensure_zivpn's syncer lookup).
+# It must be defined before the library is sourced: under `set -u`
+# an unset SCRIPT_DIR is fatal and killed vpsupdate mid-run.
+SCRIPT_DIR="$SUITE_DIR"
 BACKUP_ROOT="${VPSMGR_BACKUP_ROOT:-/var/backups/vps-manager-suite}"
 DRY_RUN=0; [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 

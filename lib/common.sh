@@ -4,6 +4,12 @@
 
 CONFIG_DIR="${VPSMGR_CONFIG_DIR:-/etc/vps-manager}"
 DATA_DIR="${VPSMGR_DATA_DIR:-/var/lib/vps-manager}"
+# SCRIPT_DIR is set by install.sh/menu.sh/fix-stack.sh, but update.sh
+# sources this library without it. Under `set -u` an unset SCRIPT_DIR
+# is fatal (it killed vpsupdate mid-run inside ensure_zivpn, before
+# any service was restarted) - and `|| true` cannot save it. Default
+# to the standard suite location, honouring the env override.
+SCRIPT_DIR="${SCRIPT_DIR:-${VPSMGR_SUITE_DIR:-/opt/vps-manager-suite}}"
 LOG_FILE="${CONFIG_DIR}/activity.log"
 CREDS_FILE="${CONFIG_DIR}/credentials.json"
 CONFIG_FILE="${CONFIG_DIR}/config.json"

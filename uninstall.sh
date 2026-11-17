@@ -35,11 +35,19 @@ if [[ "${EUID:-$(id -u)}" -ne 0 && -z "$ROOT" ]]; then
 fi
 
 # --- 1) Stop + disable services ---
+# Each stop is printed and capped with `timeout`: a service that
+# ignores SIGTERM makes systemd wait up to 90s before SIGKILL, and
+# with 11 services and all output swallowed that looked exactly like
+# a stuck/dead VPS (no output at all). No single service may stall
+# the uninstall for more than 20s now. Dropbear goes last: it is the
+# SSH server, so stopping it first could drop the admin's own session
+# mid-uninstall if they happen to be connected through it.
 step "Stopping services..."
 if command -v systemctl >/dev/null 2>&1; then
-  for svc in vps-panel ws-proxy xray haproxy nginx dropbear vps-monitor vps-bot vps-slowdns vps-zivpn vps-openvpn; do
-    systemctl disable --now "$svc" >/dev/null 2>&1 || true
-    systemctl stop "$svc" >/dev/null 2>&1 || true
+  for svc in vps-panel ws-proxy xray haproxy nginx vps-monitor vps-bot vps-slowdns vps-zivpn vps-openvpn dropbear; do
+    echo "  [..] stopping $svc..."
+    timeout 20 systemctl disable --now "$svc" >/dev/null 2>&1 || true
+    timeout 20 systemctl stop "$svc" >/dev/null 2>&1 || true
   done
 fi
 # Extra protocols: remove their firewall rules + sysctl drop-ins
