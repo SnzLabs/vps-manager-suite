@@ -212,11 +212,26 @@ def serve(client, addr, use_proxy):
                 via = "proxy"
         conn = BufferedConn(client, leftover)
         mode, first_bytes = "", b""
+        # A raw SSH client (SSH-over-TLS with no payload) waits for the
+        # SERVER banner before it sends anything, while read_head() waits
+        # for the client first - that deadlock hung the connection until
+        # the client gave up ("Premature connection close" after ~5s).
+        # Give the client a short window to speak; silence means raw SSH
+        # waiting for our banner, so fall through to raw mode and let the
+        # target's banner reach the client below.
+        client.settimeout(2.0)
         # Speak HTTP until the connection becomes a raw tunnel. An
         # SSH-over-SSL client passes through two request phases on ONE
         # connection: CONNECT first (answered 200), then its payload.
         while not mode:
-            head = conn.read_head()
+            try:
+                head = conn.read_head()
+            except socket.timeout:
+                # No first bytes within the window: raw SSH client
+                # waiting for the server banner.
+                client.settimeout(None)
+                mode, first_bytes = "raw", conn.take_buffered()
+                break
             if not head:
                 client.close()
                 return
@@ -242,6 +257,7 @@ def serve(client, addr, use_proxy):
             else:
                 # Not HTTP at all - forward everything untouched.
                 mode, first_bytes = "raw", head + conn.take_buffered()
+        client.settimeout(None)  # blocking again for the tunnel phase
         log_connection(real_ip, via)
         print("[OK] ws-proxy: %s tunnel from %s (via %s) -> SSH %s:%d"
               % (mode, real_ip, via, TARGET[0], TARGET[1]), flush=True)

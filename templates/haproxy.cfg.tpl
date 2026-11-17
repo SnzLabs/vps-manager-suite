@@ -147,7 +147,11 @@ frontend https_http
     # Panel on the main domain: any HTTPS path that is NOT a VPN/Xray
     # path goes to the panel, so it opens at https://<domain>/ - no
     # :9090, no subdomain, no DNS change. VPN paths above are untouched.
-    use_backend panel_backend if !is_router_path
+    # The method guard keeps non-HTTP traffic out of the panel: a raw
+    # SSH payload that the dispatch missed has no HTTP method, so it
+    # falls through to the default (nginx) instead of hitting the panel.
+    acl is_browser_method method GET HEAD POST PUT DELETE OPTIONS PATCH
+    use_backend panel_backend if !is_router_path is_browser_method
     default_backend nginx_https
 
 backend https_http_in
