@@ -254,6 +254,18 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl is-active --quiet vps-bot 2>/dev/null && systemctl restart vps-bot 2>/dev/null || true
 fi
 
+# Strip ANSI colour codes from the live SSH banner, if present. Phone
+# VPN apps show the Server Message in a plain log viewer that does not
+# interpret ANSI escapes, so a banner saved with colours prints as
+# literal '[1;33m' litter. The panel now writes new banners without
+# ANSI (write_live_banner), but a banner saved before that fix still
+# carries the codes in /etc/vps-manager/banner.txt - strip them here so
+# one vpsupdate cleans the live banner with no re-save needed.
+if [ -f /etc/vps-manager/banner.txt ] && grep -q $'\x1b' /etc/vps-manager/banner.txt 2>/dev/null; then
+  sed -i 's/\x1b\[[0-9;]*m//g' /etc/vps-manager/banner.txt 2>/dev/null || true
+  echo "[update] Live SSH banner cleaned (ANSI colour codes removed)."
+fi
+
 # Verification pass: prove the core services are actually up before
 # claiming success. A restart above can fail (bad config, missing
 # binary) and the old script printed "UPDATE OK" anyway - a stopped
