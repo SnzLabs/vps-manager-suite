@@ -117,6 +117,13 @@ def strip_ansi(text):
     return _ANSI_RE.sub("", text)
 
 
+# Orphaned ANSI code text: "[1;92m", "[0m" with NO ESC byte in front.
+# This is what is left when an earlier clean stripped just the ESC byte
+# and kept the rest of the code - it then shows as literal text in the
+# preview and the banner. No real banner text looks like this.
+_ORPHAN_ANSI_RE = re.compile(r"\[[0-9;]*m")
+
+
 # ---------------------------------------------------------------------------
 # Big block-letter font (3 rows). Glyphs are 1-4 columns wide and use only
 # the full block character, so they render the same everywhere.
@@ -175,9 +182,15 @@ def big_text(text):
 # ---------------------------------------------------------------------------
 
 def _clean_text(value):
-    """One safe banner line: no newlines, no control chars (a raw ESC in
-    user text would let it inject its own color codes), trimmed."""
+    """One safe banner line: no newlines, no control chars, no ANSI
+    colour codes (a raw ESC in user text would let it inject its own
+    color codes), trimmed. Strip the WHOLE ANSI sequence, not just the
+    ESC byte: removing only the ESC leaves the '[1;92m' remainder as
+    literal text, which then shows in the preview and the banner. Also
+    remove orphaned '[1;92m' text left behind by the old behaviour."""
     s = str(value or "")
+    s = strip_ansi(s)
+    s = _ORPHAN_ANSI_RE.sub("", s)
     s = s.replace("\r", " ").replace("\n", " ").replace("\t", " ")
     s = "".join(ch for ch in s if ord(ch) >= 32 and ord(ch) != 127)
     return s.strip()
