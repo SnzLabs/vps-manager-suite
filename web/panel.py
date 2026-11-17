@@ -127,13 +127,13 @@ def sync_xray(emit=None):
     except Exception: pass
 def save_config(c): save_json("config.json", c)
 
-# --- SNI Manager (first-party profiles only) ---------------------------------
-# Profiles connect clients to THIS server's own nodes. A profile domain is
-# accepted only when it is the configured domain, a subdomain of it, or the
-# configured SlowDNS / UDP host. Third-party hostnames are rejected here and
-# again in scripts/config-sync.py, so a profile can never point clients at
-# someone else's host. The SNI of a profile is always its own domain - there
-# is no free SNI field anywhere in this module.
+# --- SNI Manager (custom domains + free SNI) ----------------------------------
+# Profiles may target ANY valid domain/IP: HAProxy terminates every TLS
+# session with the suite certificate and the 443 dispatch chain routes by
+# payload, so a custom domain only changes what the client points at and
+# the SNI it presents - the connection still lands on this server. The SNI
+# is freely settable per profile (blank = the profile's domain) and is what
+# lands in the HAProxy sni.map (rendered by scripts/config-sync.py).
 CONFIG_PROTOCOLS = ("ssh-tls", "vmess", "vless", "trojan", "openvpn", "slowdns")
 CONFIG_DEFAULT_PORTS = {"ssh-tls": 443, "vmess": 443, "vless": 443,
                         "trojan": 443, "openvpn": 1194, "slowdns": 53}
@@ -162,33 +162,17 @@ def config_profile_path(proto, path=None):
         return str(path)
     return valid[0] if valid else ""
 
-def config_owned_domains(cfg=None):
-    cfg = cfg if cfg is not None else load_config()
-    out = []
-    for cand in (cfg.get("domain"), slowdns_host(cfg), udp_host(cfg)):
-        v = str(cand or "").strip().rstrip(".").lower()
-        if v and v not in out:
-            out.append(v)
-    return out
-
-def config_is_owned(host, cfg=None):
-    """Owned = the configured domain itself, any subdomain of it, or the
-    configured SlowDNS / UDP host. 'domain.evil.com' style suffix tricks
-    and look-alike parents never match."""
-    h = str(host or "").strip().rstrip(".").lower()
-    if not h or not valid_hostname(h):
-        return False
-    for base in config_owned_domains(cfg):
-        if h == base or h.endswith("." + base):
-            return True
-    return False
-
 def config_payload(domain):
     return f"GET /sshws HTTP/1.1[crlf]Host: {domain}[crlf]Upgrade: websocket[crlf][crlf]"
 
 def config_validate(data, cfg=None):
-    """Validate profile form/API data -> (clean, None) or (None, error)."""
-    cfg = cfg if cfg is not None else load_config()
+    """Validate profile form/API data -> (clean, None) or (None, error).
+
+    Any valid public hostname is accepted as the target domain (the route
+    still lands on THIS server's 443 dispatch chain - a custom domain only
+    changes what the client points at and the SNI it presents), and the
+    SNI is freely settable per profile (blank = the profile's domain).
+    """
     name = str(data.get("name") or "").strip()
     if not (1 <= len(name) <= 60):
         return None, "Profile name must be 1-60 characters."
@@ -196,19 +180,22 @@ def config_validate(data, cfg=None):
     if proto not in CONFIG_PROTOCOLS:
         return None, "Unknown protocol."
     domain = str(data.get("domain") or "").strip().rstrip(".").lower()
-    if not config_is_owned(domain, cfg):
-        return None, (f"Domain '{domain or '(blank)'}' is not one of this server's own domains. "
-                      "Only the configured domain, its subdomains and the SlowDNS / UDP hosts are allowed.")
+    if not domain or not valid_hostname(domain):
+        return None, (f"'{domain or '(blank)'}' is not a valid hostname or IP - "
+                      "enter a domain (e.g. cdn.example.com) or a dotted IPv4 address.")
     port = to_int(data.get("port", CONFIG_DEFAULT_PORTS[proto]), -1)
     if not (1 <= port <= 65535):
         return None, "Port must be a number between 1 and 65535."
     if port in CONFIG_BLOCKED_PORTS:
         return None, f"Port {port} is an internal/panel port and cannot be a client endpoint."
+    sni = str(data.get("sni") or "").strip().rstrip(".").lower()
+    if sni and not valid_hostname(sni):
+        return None, f"SNI '{sni}' is not a valid hostname - leave it blank to use the domain."
     clean = {"name": name, "protocol": proto, "domain": domain, "port": port,
-             "sni": domain, "path": config_profile_path(proto, data.get("path")),
+             "sni": sni or domain, "path": config_profile_path(proto, data.get("path")),
              "active": bool(data.get("active"))}
     if proto == "ssh-tls":
-        clean["payload"] = config_payload(domain)
+        clean["payload"] = config_payload(sni or domain)
     return clean, None
 
 def load_profiles():
@@ -219,13 +206,14 @@ def save_profiles(rows): save_json("config-profiles.json", rows)
 
 def config_public(p):
     """The public shape of one profile (panel export + /api/configs):
-    first-party fields only - address and SNI are the operator's own domain."""
+    address, SNI and payload follow the profile's own domain/SNI fields."""
+    _sni = str(p.get("sni") or p.get("domain") or "")
     pub = {"name": p.get("name", ""), "protocol": p.get("protocol", ""),
            "address": p.get("domain", ""), "port": to_int(p.get("port", 0)),
-           "sni": p.get("domain", ""),
+           "sni": _sni,
            "path": config_profile_path(p.get("protocol", ""), p.get("path"))}
     if p.get("protocol") == "ssh-tls":
-        pub["payload"] = config_payload(p.get("domain", ""))
+        pub["payload"] = config_payload(_sni)
     return pub
 
 def config_export_b64(p):
@@ -1891,8 +1879,6 @@ class Handler(BaseHTTPRequestHandler):
             editing = next((x for x in profiles if x.get("id") == edit_id), None)
             saved_prof = next((x for x in profiles if x.get("id") == saved_id), None)
             tok = ensure_config_token()
-            owned = config_owned_domains(cfg)
-            owned_txt = ", ".join(html.escape(x) for x in owned) or "(no domain configured yet)"
             _ev = editing or {}
             _ev_proto = str(_ev.get("protocol", "vless"))
             proto_opts = "".join(
@@ -1939,7 +1925,7 @@ class Handler(BaseHTTPRequestHandler):
                 ssvg = qr_svg_for(sb64)
                 sqr = f"<details class='qrd' open><summary>QR code</summary><div class='qrbox'>{ssvg}</div></details>" if ssvg else "<p class='mut'>QR code unavailable for this profile (the encoded profile is too long for a QR code) - use the copyable code below instead.</p>"
                 saved_html = f"""<div class='card'><h3>Client Config - {html.escape(str(saved_prof.get('name','')))}</h3>
-            <p class='mut'>Saved. Give this code (or the QR code) to the client: they import it and connect - no manual host or SNI typing. "Locked" means the profile contains no editable raw host field beyond your own domain (<b>{html.escape(str(saved_prof.get('domain','')))}</b>). The code is <b>base64 encoding, not encryption</b> - anyone can decode it, so share it like a password.</p>
+            <p class='mut'>Saved. Give this code (or the QR code) to the client: they import it and connect - no manual host or SNI typing. "Locked" means the client cannot edit the host or SNI fields in the profile (<b>{html.escape(str(saved_prof.get('domain','')))}</b>). The code is <b>base64 encoding, not encryption</b> - anyone can decode it, so share it like a password.</p>
             <div class='codebox'><button type='button' class='copybtn' onclick="copyText('cfg-saved', this)">Copy</button><pre id='cfg-saved'>{html.escape(sb64)}</pre></div>
             {sqr}
             <h3 style='margin-top:16px'>Profile contents</h3><pre class='raw'>{html.escape(json.dumps(spub, indent=2))}</pre></div>
@@ -1950,14 +1936,14 @@ class Handler(BaseHTTPRequestHandler):
             <label>Profile Name</label><input name='name' required maxlength='60' value='{html.escape(str(_ev.get('name','')))}' placeholder='Fast Route 1'>
             <label>Protocol</label><select name='protocol' id='sni-proto'>{proto_opts}</select>
             <label>Target VPS Domain / IP</label><input name='domain' id='sni-domain' required value='{html.escape(_ev_domain)}' placeholder='{html.escape(domain)}'>
-            <p class='mut'>Allowed hosts: <b>{owned_txt}</b> and their subdomains. Any other hostname is rejected - profiles only ever point at this server's own nodes.</p>
+            <p class='mut'>Any domain or IPv4 works - the route still lands on this server's 443 dispatch chain.</p>
             <label>Port</label><input name='port' id='sni-port' type='number' min='1' max='65535' value='{to_int(_ev.get('port', _def_port), _def_port)}'>
-            <label>SNI</label><input id='sni-mirror' value='{html.escape(_ev_domain)}' readonly disabled>
-            <p class='mut'>SNI is locked to your own domain.</p>
+            <label>SNI</label><input name='sni' id='sni-mirror' value='{html.escape(str(_ev.get('sni') or _ev_domain))}' placeholder='{html.escape(_ev_domain)}'>
+            <p class='mut'>SNI the client presents (blank = the domain above).</p>
             <label>Path</label>{path_sel}
             <label style='display:block;margin:8px 0'><input type='checkbox' name='active' value='1'{' checked' if _ev.get('active', True) else ''} style='width:auto;display:inline'> Active (included in /api/configs and the routing maps)</label>
             <button>Save & Generate Client Config</button></form>
-            <p class='mut'>Default ports: VLESS / VMess / Trojan / SSH 443, OpenVPN 1194, SlowDNS 53. For SSH the payload is generated for you with Host set to the profile domain, and the path is the protocol's real endpoint on this stack.</p></div>
+            <p class='mut'>Default ports: VLESS / VMess / Trojan / SSH 443, OpenVPN 1194, SlowDNS 53. For SSH the payload is generated for you with Host set to the profile SNI, and the path is the protocol's real endpoint on this stack.</p></div>
             {saved_html}<div class='card'><h3>Saved SNI Routes</h3><div class='tblwrap'><table><tr><th>Name</th><th>Protocol</th><th>VPS Domain</th><th>SNI</th><th>Port</th><th>Status</th><th>Action</th></tr>{rows}</table></div>
             <p class='mut'>Saving, toggling or deleting a route re-renders the routing maps (scripts/config-sync.sh) and reloads HAProxy gracefully when a map changed.</p></div>
             <div class='card'><h3>SNI Manager - API Token</h3>
@@ -1971,7 +1957,6 @@ class Handler(BaseHTTPRequestHandler):
                   mir=document.getElementById('sni-mirror'), port=document.getElementById('sni-port'),
                   path=document.getElementById('sni-path');
               if(!proto||!dom) return;
-              dom.addEventListener('input', function(){{ if(mir) mir.value=dom.value; }});
               proto.addEventListener('change', function(){{
                 var p=proto.value;
                 if(port && ports[p]) port.value=ports[p];
@@ -1997,7 +1982,7 @@ class Handler(BaseHTTPRequestHandler):
             svg = qr_svg_for(b64)
             qr_html = f"<details class='qrd' open><summary>QR code</summary><div class='qrbox'>{svg}</div></details>" if svg else "<p class='mut'>QR code unavailable for this profile (the encoded profile is too long for a QR code) - use the copyable code below instead.</p>"
             body = f"""<div class='card'><h3>Locked Config - {html.escape(str(prof.get('name','')))}</h3>
-            <p class='mut'>Give this code (or the QR code) to the client: they import it and connect - no manual host or SNI typing. "Locked" means the profile contains no editable raw host field beyond your own domain (<b>{html.escape(str(prof.get('domain','')))}</b>). The code is <b>base64 encoding, not encryption</b> - anyone can decode it, so share it like a password.</p>
+            <p class='mut'>Give this code (or the QR code) to the client: they import it and connect - no manual host or SNI typing. "Locked" means the client cannot edit the host or SNI fields in the profile (<b>{html.escape(str(prof.get('domain','')))}</b>). The code is <b>base64 encoding, not encryption</b> - anyone can decode it, so share it like a password.</p>
             <div class='codebox'><button type='button' class='copybtn' onclick="copyText('cfg-export', this)">Copy</button><pre id='cfg-export'>{html.escape(b64)}</pre></div>
             {qr_html}
             <h3 style='margin-top:16px'>Profile contents</h3><pre class='raw'>{pretty}</pre>
