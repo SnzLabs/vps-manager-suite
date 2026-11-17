@@ -54,15 +54,6 @@ frontend https_in
     mode tcp
     bind *:443 ssl crt /etc/vps-manager/ssl/haproxy.pem alpn http/1.1
     timeout client 3600s
-    # Panel on 443 (panel.<domain>): the web panel is reachable as a
-    # normal website on the reliable 443 path instead of :9090, whose
-    # external path is flaky on some VPS networks (TCP connects but the
-    # TLS/HTTP answer often never arrives, while 443 answers every time).
-    # Static rule (NOT in sni.map) so scripts/config-sync.py never
-    # overwrites it. First matching use_backend wins, so this sits
-    # before the SNI-map rule below.
-    acl is_panel_sni ssl_fc_sni -i panel.__DOMAIN__
-    use_backend panel_backend if is_panel_sni
     # Config Manager SNI map (panel > Config Manager, rendered by
     # scripts/config-sync.py into /etc/vps-manager/sni.map): the SNI of
     # the TLS session terminated HERE is visible as ssl_fc_sni -
@@ -90,16 +81,22 @@ backend https_dispatch_in
     server dispatch 127.0.0.1:10444 send-proxy
 
 backend panel_backend
-    mode tcp
-    timeout server 60s
-    # TLS bridging: the frontend above already terminated the client's
-    # TLS (presenting the panel-subdomain cert from haproxy.pem), and
-    # this re-encrypts to the panel's own HTTPS listener on
-    # 127.0.0.1:9090. verify none: the panel's cert is for the main
-    # domain and HAProxy does not need to validate it - the client only
-    # ever sees the panel-subdomain cert from haproxy.pem. The panel
-    # has no IP-based blocking, so it seeing HAProxy (127.0.0.1) as the
-    # client IP only affects the activity log, nothing functional.
+    mode http
+    timeout server 3600s
+    timeout tunnel 3600s
+    # Panel on the MAIN domain (https://<domain>/): reached from the
+    # https_http frontend below for any path that is NOT a VPN/Xray path.
+    # The panel opens at the domain itself - no :9090, no subdomain, no
+    # DNS change, no extra cert (haproxy.pem already covers the main
+    # domain). The panel's absolute redirects (/login, /) work because
+    # it IS at the root. The frontend already set X-Forwarded-For to
+    # the real client IP; that header is passed through untouched.
+    http-request set-header X-Forwarded-Proto https
+    # TLS bridging: the panel only listens on HTTPS (127.0.0.1:9090)
+    # with the main-domain cert. verify none: HAProxy does not need to
+    # validate the panel's own cert (localhost); the client only ever
+    # sees haproxy.pem's cert for the main domain. Generous timeouts so
+    # the panel's streamed outputs (Fix Stack, speedtest) are not cut.
     server panel 127.0.0.1:9090 ssl verify none
 
 frontend https_dispatch
@@ -147,6 +144,10 @@ frontend https_http
     # Xray WS/XHTTP account paths and SSH-WS over TLS
     acl is_router_path path_beg /sshws /vmess /vless /trojan /xhttp /xhttp-vmess /xhttp-trojan
     use_backend nginx_https if is_router_path
+    # Panel on the main domain: any HTTPS path that is NOT a VPN/Xray
+    # path goes to the panel, so it opens at https://<domain>/ - no
+    # :9090, no subdomain, no DNS change. VPN paths above are untouched.
+    use_backend panel_backend if !is_router_path
     default_backend nginx_https
 
 backend https_http_in
