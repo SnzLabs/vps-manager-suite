@@ -392,8 +392,18 @@ def read_live_banner():
 
 def write_live_banner(rendered):
     """Write the rendered banner (str) to the live banner file.
-    Returns (path_written, error)."""
-    data = (rendered + "\n").encode("utf-8")
+    Returns (path_written, error). The live file is written WITHOUT
+    ANSI colour codes: the banner is served to SSH clients, and phone
+    VPN apps (HTTP Custom) show their Server Message in a plain log
+    viewer that does not interpret ANSI escapes - it prints the raw
+    bytes, so the codes appear as literal '[1;33m' litter through the
+    box. Stripping them keeps the box and text clean in the app; the
+    panel preview still shows the colours (it renders HTML)."""
+    try:
+        plain = _banner.strip_ansi(rendered) if _banner is not None else rendered
+    except Exception:
+        plain = rendered
+    data = (plain + "\n").encode("utf-8")
     err = ""
     for cand in _banner_targets():
         try:
@@ -421,7 +431,9 @@ def effective_banner_design(cfg):
             design = None
     live = read_live_banner()
     if design is not None:
-        if live is None or live.rstrip("\n") == _banner.render(design):
+        # The live file is written ANSI-stripped (see write_live_banner),
+        # so compare against the stripped render, not the coloured one.
+        if live is None or live.rstrip("\n") == _banner.strip_ansi(_banner.render(design)):
             return design, "design"
     if live is not None and live.strip():
         if live.strip() == "Welcome to VPS Manager Suite":
@@ -1647,10 +1659,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(b)))
         self.end_headers(); self.wfile.write(b)
     def redirect(self, loc, code=302, headers=None):
+        # A redirect MUST carry a Content-Type, a Content-Length and a
+        # small body. The old version sent a bare redirect (status +
+        # Location only, no body, no Content-Type/Length). That is legal
+        # HTTP/1.0, but through HAProxy's HTTP-mode TLS bridging the
+        # close-delimited, typeless response came out in a form Chrome
+        # treated as a downloadable file: on login the browser started
+        # a file download instead of following the redirect to the
+        # dashboard (the session cookie was still set, so a manual
+        # reload opened the dashboard). A complete response fixes it.
+        body = ("<html><head><title>Redirecting…</title></head><body>"
+                "<p>If you are not redirected, <a href=\"%s\">click here</a>.</p>"
+                "</body></html>" % html.escape(loc, quote=True)).encode()
         self.send_response(code); self.send_header("Location", loc)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         if headers:
             for k, v in headers: self.send_header(k, v)
-        self.end_headers()
+        self.end_headers(); self.wfile.write(body)
     def form(self):
         length = int(self.headers.get("Content-Length", 0)); raw = self.rfile.read(length).decode()
         return {k: v[0] for k, v in urllib.parse.parse_qs(raw).items()}
