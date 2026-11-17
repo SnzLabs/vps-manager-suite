@@ -130,8 +130,22 @@ frontend https_dispatch
     # client IP to ws-proxy's connection log, which is all the nginx
     # hop used to add for this path.
     acl is_sshws_req payload(0,10) -m str "GET /sshws"
+    # A client that sent NOTHING within the inspect-delay is a raw SSH
+    # client waiting for the server banner (in SSH the server speaks
+    # first). Route it to ws-proxy so Dropbear's banner reaches it.
+    # Without this, a silent client falls through to the HTTP frontend
+    # (nginx), which waits for an HTTP request while the client waits
+    # for a banner - a deadlock the client abandons after ~5s as
+    # "Premature connection close". HTTP clients always send a request
+    # first, so a 0-byte payload after 2s is not a slow HTTP client.
+    # NOTE: payload(0,4) -m len 0 does NOT detect this - on an empty
+    # buffer the payload fetch is undefined, so the len match is false.
+    # has_payload (-m found) is true only when >=1 byte is buffered,
+    # so its negation is exactly "nothing arrived".
+    acl has_payload payload(0,1) -m found
     use_backend ws_proxy_raw if is_raw_ssh
     use_backend ws_proxy_raw if is_sshws_req
+    use_backend ws_proxy_raw if !has_payload
     default_backend https_http_in
 
 frontend https_http

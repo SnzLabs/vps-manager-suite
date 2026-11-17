@@ -218,8 +218,11 @@ def serve(client, addr, use_proxy):
         # the client gave up ("Premature connection close" after ~5s).
         # Give the client a short window to speak; silence means raw SSH
         # waiting for our banner, so fall through to raw mode and let the
-        # target's banner reach the client below.
-        client.settimeout(2.0)
+        # target's banner reach the client below. 1s (not 2s): the
+        # HAProxy dispatch already waited 2s for a payload before
+        # routing a silent client here, so 1s here keeps the total ~3s,
+        # inside the client's ~5s give-up.
+        client.settimeout(1.0)
         # Speak HTTP until the connection becomes a raw tunnel. An
         # SSH-over-SSL client passes through two request phases on ONE
         # connection: CONNECT first (answered 200), then its payload.
