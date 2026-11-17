@@ -54,6 +54,15 @@ frontend https_in
     mode tcp
     bind *:443 ssl crt /etc/vps-manager/ssl/haproxy.pem alpn http/1.1
     timeout client 3600s
+    # Panel on 443 (panel.<domain>): the web panel is reachable as a
+    # normal website on the reliable 443 path instead of :9090, whose
+    # external path is flaky on some VPS networks (TCP connects but the
+    # TLS/HTTP answer often never arrives, while 443 answers every time).
+    # Static rule (NOT in sni.map) so scripts/config-sync.py never
+    # overwrites it. First matching use_backend wins, so this sits
+    # before the SNI-map rule below.
+    acl is_panel_sni ssl_fc_sni -i panel.__DOMAIN__
+    use_backend panel_backend if is_panel_sni
     # Config Manager SNI map (panel > Config Manager, rendered by
     # scripts/config-sync.py into /etc/vps-manager/sni.map): the SNI of
     # the TLS session terminated HERE is visible as ssl_fc_sni -
@@ -79,6 +88,19 @@ backend https_dispatch_in
     mode tcp
     timeout server 3600s
     server dispatch 127.0.0.1:10444 send-proxy
+
+backend panel_backend
+    mode tcp
+    timeout server 60s
+    # TLS bridging: the frontend above already terminated the client's
+    # TLS (presenting the panel-subdomain cert from haproxy.pem), and
+    # this re-encrypts to the panel's own HTTPS listener on
+    # 127.0.0.1:9090. verify none: the panel's cert is for the main
+    # domain and HAProxy does not need to validate it - the client only
+    # ever sees the panel-subdomain cert from haproxy.pem. The panel
+    # has no IP-based blocking, so it seeing HAProxy (127.0.0.1) as the
+    # client IP only affects the activity log, nothing functional.
+    server panel 127.0.0.1:9090 ssl verify none
 
 frontend https_dispatch
     mode tcp

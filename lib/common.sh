@@ -102,10 +102,17 @@ dns_check() {
 # HAProxy terminates TLS on port 443, and HAProxy loads its certificate
 # as ONE bundle file (cert + key). Rebuild that bundle from the suite
 # cert pair whenever the pair is (re)issued, so HAProxy never serves a
-# stale certificate after an install or a renewal.
+# stale certificate after an install or a renewal. When the panel
+# subdomain cert exists (panel.<domain>, issued by issue_panel_ssl),
+# its pair is appended to the same bundle - HAProxy serves the right
+# certificate per SNI, so panel.<domain> on 443 gets a valid cert while
+# the main domain keeps its own.
 build_haproxy_pem() {
   if [[ -s "$CONFIG_DIR/ssl/fullchain.pem" && -s "$CONFIG_DIR/ssl/privkey.pem" ]]; then
     cat "$CONFIG_DIR/ssl/fullchain.pem" "$CONFIG_DIR/ssl/privkey.pem" > "$CONFIG_DIR/ssl/haproxy.pem" 2>/dev/null || return 1
+    if [[ -s "$CONFIG_DIR/ssl/panel-fullchain.pem" && -s "$CONFIG_DIR/ssl/panel-privkey.pem" ]]; then
+      cat "$CONFIG_DIR/ssl/panel-fullchain.pem" "$CONFIG_DIR/ssl/panel-privkey.pem" >> "$CONFIG_DIR/ssl/haproxy.pem" 2>/dev/null || true
+    fi
     chmod 600 "$CONFIG_DIR/ssl/haproxy.pem" 2>/dev/null || true
     return 0
   fi
@@ -220,6 +227,58 @@ issue_ssl() {
   )
 }
 
+issue_panel_ssl() {
+  # Issue a Let's Encrypt certificate for the panel subdomain
+  # (panel.<domain>) so the web panel is reachable as a normal website
+  # on port 443 (https://panel.<domain>) instead of :9090, whose
+  # external path is flaky on some VPS networks. The panel subdomain
+  # DNS record (A record panel.<domain> -> this server) MUST exist and
+  # resolve before this runs, or certbot's HTTP-01 challenge fails.
+  # The main-domain certificate is untouched; the panel cert is stored
+  # separately (panel-fullchain.pem / panel-privkey.pem) and appended
+  # to haproxy.pem by build_haproxy_pem, so HAProxy serves the right
+  # certificate per SNI. The panel itself keeps its main-domain cert
+  # (HAProxy re-encrypts to it with verify none), so it needs no restart.
+  # Same stop/restore contract as issue_ssl: certbot --standalone needs
+  # port 80, so haproxy + nginx are stopped and brought back on EVERY
+  # exit path via the subshell EXIT trap.
+  local domain="$1" panel_host le_dir le_log
+  domain="${domain:-$(get_domain)}"
+  [[ -n "$domain" ]] || domain="$(python3 -c "import json;print(json.load(open('$DATA_DIR/config.json')).get('domain',''))" 2>/dev/null || echo "")"
+  [[ -n "$domain" ]] || { err "No domain set - set one first (menu option 02)"; return 1; }
+  panel_host="panel.$domain"
+  ensure_dirs; mkdir -p "$CONFIG_DIR/ssl"
+  # DNS must resolve to this server first, or the challenge cannot pass.
+  if ! getent hosts "$panel_host" >/dev/null 2>&1; then
+    err "panel.$domain does not resolve yet - add a DNS A record: panel.$domain -> this server's public IP, wait a few minutes, then run this again."
+    return 1
+  fi
+  command -v certbot >/dev/null 2>&1 || { err "certbot is not installed (install it: apt-get install -y certbot)"; return 1; }
+  le_dir="/etc/letsencrypt/live/$panel_host"
+  le_log="/var/log/vps-manager-panel-certbot.log"
+  (
+  trap 'web_stack_restore' EXIT
+  trap 'web_stack_restore; exit 130' INT
+  trap 'web_stack_restore; exit 143' TERM
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop haproxy nginx 2>/dev/null || true
+  fi
+  mkdir -p "$(dirname "$le_log")" 2>/dev/null || true
+  if certbot certonly --standalone -d "$panel_host" --non-interactive --agree-tos -m "admin@$domain" >"$le_log" 2>&1 \
+     && [[ -s "$le_dir/fullchain.pem" && -s "$le_dir/privkey.pem" ]]; then
+    cp "$le_dir/fullchain.pem" "$CONFIG_DIR/ssl/panel-fullchain.pem" || true
+    cp "$le_dir/privkey.pem" "$CONFIG_DIR/ssl/panel-privkey.pem" || true
+    chmod 600 "$CONFIG_DIR/ssl/panel-privkey.pem" 2>/dev/null || true
+    build_haproxy_pem || true
+    ok "Panel SSL ready for $panel_host"
+    echo "Cert: $CONFIG_DIR/ssl/panel-fullchain.pem"
+    return 0
+  fi
+  err "Panel SSL FAILED for $panel_host - see $le_log (is the DNS A record pointing at this server yet?)"
+  return 1
+  )
+}
+
 # --- SSL: status, re-apply, auto-renew test + renewal hook -------------------
 ssl_days_left() {
   # Whole days until the ACTIVE suite certificate expires (empty if unknown)
@@ -316,13 +375,31 @@ set -u
 SSL_DIR="/etc/vps-manager/ssl"
 [[ -n "${RENEWED_LINEAGE:-}" && -s "$RENEWED_LINEAGE/fullchain.pem" ]] || exit 0
 mkdir -p "$SSL_DIR"
-cp "$RENEWED_LINEAGE/fullchain.pem" "$SSL_DIR/fullchain.pem" || true
-cp "$RENEWED_LINEAGE/privkey.pem" "$SSL_DIR/privkey.pem" || true
-chmod 600 "$SSL_DIR/privkey.pem" 2>/dev/null || true
-cat "$SSL_DIR/fullchain.pem" "$SSL_DIR/privkey.pem" > "$SSL_DIR/combined.pem" 2>/dev/null || true
-# HAProxy terminates TLS on 443 from a single bundle file - rebuild it too,
-# then the restart below makes HAProxy serve the fresh certificate.
+# The panel subdomain has its own lineage (panel.<domain>). A renewal of
+# it must land in the panel pair, NOT overwrite the main-domain pair -
+# the panel cert is only valid for panel.<domain>, so copying it over
+# fullchain.pem would break the main domain's VPN cert.
+case "$(basename "$RENEWED_LINEAGE")" in
+  panel.*)
+    cp "$RENEWED_LINEAGE/fullchain.pem" "$SSL_DIR/panel-fullchain.pem" || true
+    cp "$RENEWED_LINEAGE/privkey.pem" "$SSL_DIR/panel-privkey.pem" || true
+    chmod 600 "$SSL_DIR/panel-privkey.pem" 2>/dev/null || true
+    ;;
+  *)
+    cp "$RENEWED_LINEAGE/fullchain.pem" "$SSL_DIR/fullchain.pem" || true
+    cp "$RENEWED_LINEAGE/privkey.pem" "$SSL_DIR/privkey.pem" || true
+    chmod 600 "$SSL_DIR/privkey.pem" 2>/dev/null || true
+    cat "$SSL_DIR/fullchain.pem" "$SSL_DIR/privkey.pem" > "$SSL_DIR/combined.pem" 2>/dev/null || true
+    ;;
+esac
+# HAProxy terminates TLS on 443 from a single bundle file - rebuild it
+# from both pairs (panel pair appended when present) so it serves the
+# right certificate per SNI, then the restart below makes HAProxy serve
+# the fresh certificate.
 cat "$SSL_DIR/fullchain.pem" "$SSL_DIR/privkey.pem" > "$SSL_DIR/haproxy.pem" 2>/dev/null || true
+if [[ -s "$SSL_DIR/panel-fullchain.pem" && -s "$SSL_DIR/panel-privkey.pem" ]]; then
+  cat "$SSL_DIR/panel-fullchain.pem" "$SSL_DIR/panel-privkey.pem" >> "$SSL_DIR/haproxy.pem" 2>/dev/null || true
+fi
 chmod 600 "$SSL_DIR/haproxy.pem" 2>/dev/null || true
 for s in haproxy xray vps-panel; do systemctl restart "$s" 2>/dev/null || true; done
 exit 0
